@@ -259,7 +259,7 @@ SELECT
 	TicketType,
 	SalesByProductAndTicket*100.0 /SalesByProduct As PercentTicketType
 FROM SalesByProductType 
-ORDER BY Clean_Product_Type, PercentTicketType DESC
+ORDER BY Clean_Product_Type, PercentTicketType DESC;
 /*Analysis: 
 - Every product type main type of ticket is medium (expected);
 - Interestingly, Basket product type (which represents 40% of my total sales for every product
@@ -296,11 +296,51 @@ SELECT
 FROM SalesByTickets
 )
 SELECT
+	t1.Clean_Product_Type,
+	t1.TicketType,
+	t1.SalesByProductAndTicket*100.0 / SalesByProduct As PercentSalesProductType,
+	t2.TicketType,
+	t2.PercentTicketType
+FROM SalesByProductType t1
+LEFT JOIN TotalSubproductTickets t2
+ON t1.Clean_Product_Type = t2.Clean_Product_Type 
+	AND t1.TicketType = t2.TicketType
+ORDER BY t1.Clean_Product_Type,t1.SalesByProductAndTicket DESC;
+GO
+/* Analysis: Left TicketType and Percentages are for the top 10% subproduct sales, the second 
+ones is for every sales. This analysis was made after creating a view (see next point)
+- A&S almost duplicated the very high ticket percentage (15% -> 27%). 
+- Home Decor Followed the same pattern with High Ticket (4% -> ~10%)
+- Kitchen Also has a big decrease in medium ticket products to high ones 
+(from aprox. 9% to almost 40%)
+- Interestingly, Jewelry product type had an increase in low and very low tickets (more than doubled
+in these both ticket types: 9% and 10% respectily) */
+
+/*I want to compare it with the not top 10%, so let's create a view of the previous query and 
+then join them in order to better compare the results */
+CREATE VIEW TotalSubproductTickets As 
+WITH SalesByTickets As (
+SELECT 
+	Clean_Product_Type,
+	SUM(Total_Net_Sales) SalesByProductAndTicket,
+	TicketType
+FROM PercentagesAndTickets
+GROUP BY Clean_Product_Type, TicketType
+),
+SalesByProductType AS (
+SELECT 
+	*,
+	SUM(SalesByProductAndTicket) OVER(PARTITION BY Clean_Product_Type)  As SalesByProduct
+FROM SalesByTickets
+)
+SELECT
 	Clean_Product_Type,
 	TicketType,
-	SalesByProductAndTicket*100.0 / SalesByProduct As PercentSalesProductType
-FROM SalesByProductType
-ORDER BY Clean_Product_Type,SalesByProductAndTicket DESC;
+	SalesByProductAndTicket*100.0 /SalesByProduct As PercentTicketType
+FROM SalesByProductType; 
+GO
+
+
 
 
 
