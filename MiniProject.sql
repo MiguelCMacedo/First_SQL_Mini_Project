@@ -1,4 +1,9 @@
-﻿/*The table was imported by the Import Wizzard feature, I leave a select all option 
+﻿/* Hi. This is my first very little SQL project, with a practice focus. I used a CSV type file
+wich contains a record of sales from an online store. You can find the file on the same repository
+of this one. If someone take a look at this, please don't hesitate on giving me feedback, 
+I'm always open to improve */
+
+/*The table was imported by the Import Wizzard feature, I leave a select all option 
 just for you to see the table structure and info*/
 
 SELECT *
