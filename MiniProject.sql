@@ -1,0 +1,306 @@
+﻿/*The table was imported by the Import Wizzard feature, I leave a select all option 
+just for you to see the table structure and info*/
+
+SELECT *
+FROM RetailSalesProduct
+
+--Let's start by analysing the data quality from the products table
+SELECT 
+	*,
+	COUNT(*) OVER() NumberOfRows,
+	COUNT(Product_Type) OVER() ProductCheck,
+	COUNT(Gross_Sales) OVER() GrossSalesCheck,
+	COUNT(Net_Quantity) OVER() QuantityCheck
+FROM RetailSalesProduct;
+--ProductCeck is not equal to NumberofRows, I have NULLS there, let's create a list of them
+SELECT
+	*,
+	COUNT(*) OVER() NumberOfNulls
+FROM RetailSalesProduct
+WHERE Product_Type IS NULL
+GO
+/*I have 8 rows with a NULL in Product_Type column, so I need to remove them later in my queries?
+Because i don't know what these Nulls mean: sales without product entry? Fake/wrong sales? 
+for this matter I'll create a a view and name them Unknown */
+
+CREATE VIEW CleanSalesProducts AS 
+SELECT 
+	COALESCE(Product_Type,'Unknown') Clean_Product_Type, --replace Nulls with unknown
+	Net_Quantity,
+	Gross_Sales,
+	Discounts,
+	Returns,
+	Total_Net_Sales
+FROM RetailSalesProduct
+GO
+
+SELECT *
+FROM CleanSalesProducts
+ORDER BY Clean_Product_Type;
+--it's good (same number of rows and Nulls are replaced)!
+
+--Checking for Trail and Head Spaces:
+WITH TrimProduct AS (
+SELECT
+	Clean_Product_Type,
+	LEN(Clean_Product_Type) LengthProduct,
+	LEN(TRIM(Clean_Product_Type)) CleanLengthProduct
+FROM CleanSalesProducts
+),
+Flag As (
+SELECT 
+	*,
+	LengthProduct - CleanLengthProduct As LengthFlag
+FROM TrimProduct
+)
+SELECT 
+	*
+FROM Flag
+WHERE LengthFlag > 0
+--No entries with possible blank spaces (later on I'll select some products by name)
+
+/*Now that I have a clean data let's think about possible questions that I might want to answer
+with my analysis:
+NOTE: with the information that's available to me from this dataset, I can't say 100%
+if each row represents like a different subproduct por that product type or an order 
+aggregation of that product_type. For the record I'll consider a different subproduct.
+
+- How does the TotalNetSales done per product and per quantity of that product? 
+	- (how much are we profiting from each product unit and from the total sales for each product ?)
+- % product sales for total net_sales
+- How have the gross sales done per product and how do they compare with the net sales? 
+	- is there a discrepancy? 
+- What's the returns behavior:
+	- product with most value returned,
+	- % returns to gross_sales
+	- is there a relationship with the TotalSales results? 
+- Same from above but to the discounts
+*/
+
+/*How does the TotalNetSales done per product and per quantity of that product? 
+	- (how much are we profiting from each product unit and from the total sales for each product ?) */
+
+--let's see the bigger picture:
+WITH ProductNetSalesBigPicture AS (
+SELECT
+	Clean_Product_Type,
+	SUM(Total_Net_Sales) TotalNetSalesByProduct
+FROM CleanSalesProducts
+GROUP BY Clean_Product_Type
+),
+PercentGrandSales AS (
+SELECT 
+	*,
+	SUM(TotalNetSalesByProduct) OVER() GrandNetSalesTotal,
+	ROUND(TotalNetSalesByProduct*100.0/SUM(TotalNetSalesByProduct) OVER(),1) As PercentGrandSales
+FROM ProductNetSalesBigPicture
+)
+SELECT
+	*,
+	SUM(PercentGrandSales) OVER(ORDER BY PercentGrandSales DESC 
+	ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) RunningGrandSalesTotal,
+	COUNT(Clean_Product_Type) OVER() NumberOfProducts
+FROM PercentGrandSales;
+/* Analysis: 
+-26% (5/19) of my products are responsible from aproxima. 87% of my Net Sales 
+-40% of my net sales come from 'Basket' products
+-I want do investigate deeper those 5 products since they're responsible for almost all our 
+sales: Basket, Art&Sculpture, Jewelry, Home Decor, Kitchen
+*/
+WITH CountProducts AS (
+SELECT 
+	Clean_Product_Type,
+	SUM(Total_Net_Sales) TotalSalesByProduct,
+	COUNT(Clean_Product_Type) NumberOfProducts
+FROM CleanSalesProducts
+WHERE Clean_Product_Type IN ('Basket', 'Art & Sculpture', 'Jewelry', 'Home Decor', 
+'Kitchen') AND Total_Net_Sales > 0
+GROUP BY Clean_Product_Type
+)
+SELECT
+	Clean_Product_Type,
+	TotalSalesByProduct,
+	SUM(TotalSalesByProduct) OVER () GandTotalSales,
+	TotalSalesByProduct*100.0 / SUM(TotalSalesByProduct) OVER () PercentProductType,
+	SUM(NumberOfProducts) OVER() TotalOfProducts,
+	NumberOfProducts*100.0/SUM(NumberOfProducts) OVER() As PercentOfProducts
+FROM CountProducts
+ORDER BY TotalSalesByProduct DESC
+GO;
+/* Interesting:
+- From our Top 5 sales product types, 46% is on basket alone 
+- We sold in total 1380 different products just in our TOP 5 product types
+- The % of products follows almost the same order as the order of sales per product 
+(Home Decor and Kitchen are the ones "out of order"), it looks like that as more
+subproducts of a product type, higher the sales;
+*/ 
+
+/* Let's evaluate the concentration of our sales and have an idea of the contribution
+of the different subproducts to the product type sales: 
+A) How much each subproduct sales represent in the product type total sales;
+B) Calculation of Revenue By Unit;
+C) How much does each subproduct units sold represent in the total product type units sold;
+- Compare A) and C) to understand the sales concentration by subproduct and categorize:
+	- If % Revenue > % units in more than 5 - Very High Ticket
+	- If % Revenue > % units in more than 2 - High Ticket
+	- If % Revenue > % units in less than 2 - Medium Ticket
+	- If % Revenue < % units in less than 2 - Medium Ticket
+	- If % Revenue < % units in more than 5 - Very Low Ticket
+*/
+CREATE VIEW PercentagesAndTickets AS  
+
+WITH PercentageContributions AS (
+SELECT 
+	Clean_Product_Type,
+	Net_Quantity,
+	Total_Net_Sales,
+	Total_Net_Sales*100.0/SUM(Total_Net_Sales) OVER (PARTITION BY Clean_Product_Type) PercentBySubProduct,
+	Total_Net_Sales/NULLIF(Net_Quantity,0) As ValueByUnit,
+	Net_Quantity*100.0/SUM(Net_Quantity) OVER(PARTITION BY Clean_Product_Type) As PercentUnitsSubproduct
+FROM CleanSalesProducts
+WHERE Clean_Product_Type IN ('Basket', 'Art & Sculpture', 'Jewelry', 'Home Decor', 
+'Kitchen') AND Total_Net_Sales > 0
+)
+SELECT 
+	Clean_Product_Type,
+	Total_Net_Sales,
+	PercentBySubProduct,
+	ValueByUnit,
+	PercentUnitsSubproduct,
+	PercentBySubProduct - PercentUnitsSubproduct As SubProductTicket,
+	CASE 
+		WHEN PercentBySubProduct - PercentUnitsSubproduct > 5 THEN 'Very High Ticket'
+		WHEN PercentBySubProduct - PercentUnitsSubproduct > 2 THEN 'High Ticket'
+		WHEN PercentBySubProduct - PercentUnitsSubproduct > -2 THEN 'Medium Ticket'
+		WHEN PercentBySubProduct - PercentUnitsSubproduct > -5 THEN 'Low Ticket'
+		ELSE 'Very Low Ticket'
+	END As TicketType
+FROM PercentageContributions
+GO;
+
+/* Let's analyze better the previous table:
+- How much of the total sales come from the different types of tickets?
+- How's the product type sales distributed along the different tickets?  
+*/
+WITH SalesByTickets As (
+SELECT
+	TicketType,
+	SUM(Total_Net_Sales) SalesperTickets
+FROM PercentagesAndTickets
+GROUP BY TicketType
+),
+GrandTotalSales AS (
+SELECT
+	SUM(SalesperTickets) GrandSales
+FROM SalesByTickets
+)
+SELECT 
+	*,
+	SalesperTickets*100.0/GrandSales As PercentagesTicketType 
+FROM SalesByTickets
+CROSS JOIN GrandTotalSales 
+ORDER BY SalesperTickets DESC;
+/*Analysis: 92% of our TOP 5 product types sales are medium ticket, which means that there's a good
+dispersion of the revenue around units, so the total sales don't vary too with the variance of 
+units sold, which means that they're less risky products.
+So marketing and sales planning strategies need to take into account that to increase the 
+total sales, the units sold quantity needs a similar increase because the %revenue and %units 
+have have a close to 1 relationship as we define earlier 
+*/
+--Let's just see if the previous analysis is similar if we select only the top 10% subproducts
+WITH Ranking As (
+SELECT 
+	Total_Net_Sales,
+	TicketType,
+	COUNT(*) OVER() NumberOfRows,
+	ROW_NUMBER() OVER(ORDER BY Total_Net_Sales DESC) As RowNumber
+FROM PercentagesAndTickets
+),
+SalesByTicketsTop10 AS (
+SELECT
+	TicketType,
+	SUM(Total_Net_Sales) SalesperTickets
+FROM Ranking
+WHERE RowNumber <= ROUND(NumberOfRows*0.1,1)
+GROUP BY TicketType
+),
+GrandTotalSales AS (
+SELECT
+	SUM(SalesperTickets) GrandSales
+FROM SalesByTicketsTop10
+)
+SELECT 
+	*,
+	SalesperTickets*100.0/GrandSales As PercentagesTicketType 
+FROM SalesByTicketsTop10
+CROSS JOIN GrandTotalSales 
+ORDER BY SalesperTickets DESC;
+--Interesting: 6% of Medium Ticket goes into Very High Tickets
+
+
+/*Now let's just see how's the product type sales distributed along the different tickets?
+Instead of total sales per ticket I want to know how are the ticket types per product type */
+WITH SalesByTickets As (
+SELECT 
+	Clean_Product_Type,
+	SUM(Total_Net_Sales) SalesByProductAndTicket,
+	TicketType
+FROM PercentagesAndTickets
+GROUP BY Clean_Product_Type, TicketType
+),
+SalesByProductType AS (
+SELECT 
+	*,
+	SUM(SalesByProductAndTicket) OVER(PARTITION BY Clean_Product_Type)  As SalesByProduct
+FROM SalesByTickets
+)
+SELECT
+	Clean_Product_Type,
+	TicketType,
+	SalesByProductAndTicket*100.0 /SalesByProduct As PercentTicketType
+FROM SalesByProductType 
+ORDER BY Clean_Product_Type, PercentTicketType DESC
+/*Analysis: 
+- Every product type main type of ticket is medium (expected);
+- Interestingly, Basket product type (which represents 40% of my total sales for every product
+type has 100% medium ticket subproducts;
+- A&S has 15% Very High ticket type subproducts, and zero high ticket products (jumps directly to).
+This means that 15% of the A&S revenue comes from a more risky type of product. Strategy needs to
+take into account that increasing or decreasing the units sold of these subproducts represent a more
+variance in the revenue compared with the basket product types and even the other ones. 
+*/
+
+/* Lets do the same we did before, let's select the top 10% of subproducts by its sales revenue */
+WITH Ranking As (
+SELECT 
+	Clean_Product_Type,
+	Total_Net_Sales,
+	TicketType,
+	COUNT(*) OVER() NumberOfRows,
+	ROW_NUMBER() OVER(ORDER BY Total_Net_Sales DESC) As RowNumber
+FROM PercentagesAndTickets
+),
+SalesByTickets As (
+SELECT
+	Clean_Product_Type,
+	SUM(Total_Net_Sales) SalesByProductAndTicket,
+	TicketType
+FROM Ranking
+WHERE RowNumber <= ROUND(0.1*NumberOfRows,0)
+GROUP BY Clean_Product_Type, TicketType
+),
+SalesByProductType AS (
+SELECT 
+	*,
+	SUM(SalesByProductAndTicket) OVER(PARTITION BY Clean_Product_Type) As SalesByProduct
+FROM SalesByTickets
+)
+SELECT
+	Clean_Product_Type,
+	TicketType,
+	SalesByProductAndTicket*100.0 / SalesByProduct As PercentSalesProductType
+FROM SalesByProductType
+ORDER BY Clean_Product_Type,SalesByProductAndTicket DESC;
+
+
+
